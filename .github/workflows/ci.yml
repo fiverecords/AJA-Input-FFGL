@@ -1,0 +1,120 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright (c) 2026 Joaquin Villodre
+#
+# CI for AJA-Input-FFGL.
+#
+# What it does:
+#   1. Ubuntu 22.04 runner: install build deps, clone the AJA SDK (pinned to
+#      the same tag the project uses locally), clone FFGL, configure with
+#      CMake, build both targets (AJAInput and AJAInputTests), run the
+#      test suite via ctest.
+#
+# Caching:
+#   - The AJA SDK clone is the slowest single step (~30 s on a fresh runner).
+#     We pin to a tag and cache the directory so re-runs hit the cache.
+#   - Build artefacts are not cached: a small CMake build of our tree
+#     finishes faster than restoring an old build directory.
+#
+# What it deliberately does NOT do (yet):
+#   - Windows / macOS builds. The plugin's primary target is Windows, but
+#     setting up the AJA SDK + ffgl-sdk + vcpkg toolchain on a Windows
+#     runner takes longer than the value justifies for a per-push gate. The
+#     Linux build is enough to catch the most common regressions (headers,
+#     namespaces, dependency order). Windows validation happens on the
+#     developer's box.
+#   - GL-bearing tests. FrameProducer, SharedTextureRing, AJAInputPlugin end-
+#     to-end all need an OpenGL context. Headless GL on a CI runner
+#     (EGL surfaceless, llvmpipe, xvfb) is doable but adds 30-60 s of
+#     setup per run; we will add a separate job for it when the GL paths
+#     develop a regression-prone surface.
+
+name: CI
+
+on:
+  # Every branch: work happens on feature branches too, and a broken
+  # build should show up before it reaches main.
+  push:
+    branches: [ '**' ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux-build-and-test:
+    runs-on: ubuntu-22.04
+
+    env:
+      AJA_SDK_TAG: ntv2_18_0_0
+      # Pinned FFGL commit (was the moving `master` branch, which the
+      # cache key then froze at whatever master was on the first run).
+      # Bump deliberately together with local testing.
+      FFGL_REF: 5b6e07840277df9ec35a228b9eb067636316350f
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ninja-build \
+            libgl1-mesa-dev \
+            libglew-dev \
+            git
+
+      - name: Cache AJA SDK
+        id: aja-cache
+        uses: actions/cache@v4
+        with:
+          path: external/libajantv2
+          # Key on the SDK tag so a tag bump invalidates the cache cleanly.
+          key: ${{ runner.os }}-aja-${{ env.AJA_SDK_TAG }}
+
+      - name: Clone AJA SDK
+        if: steps.aja-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p external
+          git clone --depth 1 --branch "$AJA_SDK_TAG" \
+            https://github.com/aja-video/libajantv2.git \
+            external/libajantv2
+
+      - name: Cache FFGL SDK
+        id: ffgl-cache
+        uses: actions/cache@v4
+        with:
+          path: external/ffgl
+          key: ${{ runner.os }}-ffgl-${{ env.FFGL_REF }}
+
+      - name: Clone FFGL SDK
+        if: steps.ffgl-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p external/ffgl
+          cd external/ffgl
+          git init -q
+          git remote add origin https://github.com/resolume/ffgl.git
+          git fetch -q --depth 1 origin "$FFGL_REF"
+          git checkout -q FETCH_HEAD
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DFFGL_ROOT="$PWD/external/ffgl" \
+            -DAJANTV2_ROOT="$PWD/external/libajantv2"
+
+      - name: Build plugin and tests
+        run: cmake --build build -j2
+
+      - name: Run tests
+        working-directory: build
+        run: ctest --output-on-failure
+
+      - name: Upload plugin artefact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AJAInput-linux-${{ github.sha }}
+          path: build/AJAInput.so
+          retention-days: 14
