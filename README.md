@@ -279,7 +279,9 @@ The plugin is `build\Release\AJAInput.dll`, one self-contained file
 Linux (development and CI): the same CMake project builds
 `AJAInput.so`, the unit tests (`AJAInputTests`) and, with
 `-DAJAINPUT_BUILD_HOST_SMOKE=ON`, a headless FFGL host test on EGL / Mesa
-(`ffgl_host_smoke`).
+(`ffgl_host_smoke`). On Ubuntu it needs `build-essential cmake
+ninja-build libgl1-mesa-dev libglew-dev libudev-dev` (libudev for the AJA
+SDK).
 
 ## How it works
 
